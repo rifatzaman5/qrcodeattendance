@@ -1,0 +1,180 @@
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import toast from 'react-hot-toast';
+import { ScanLine, Keyboard, CheckCircle, XCircle } from 'lucide-react';
+
+export default function MarkAttendancePage() {
+  const scannerRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const html5QrRef = useRef<any>(null);
+  const [scanning, setScanning] = useState(false);
+  const [manualToken, setManualToken] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [result, setResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [location, setLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [tab, setTab] = useState<'camera' | 'manual'>('camera');
+  const processedRef = useRef(false);
+
+  // Get location on mount
+  useEffect(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        pos => setLocation({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
+        () => setLocation(null)
+      );
+    }
+  }, []);
+
+  // Start/stop camera scanner
+  useEffect(() => {
+    if (tab !== 'camera' || result) return;
+
+    let scanner: any;
+    const startScanner = async () => {
+      const { Html5Qrcode } = await import('html5-qrcode');
+      if (!scannerRef.current) return;
+      scanner = new Html5Qrcode('qr-reader');
+      html5QrRef.current = scanner;
+      setScanning(true);
+      try {
+        await scanner.start(
+          { facingMode: 'environment' },
+          { fps: 10, qrbox: { width: 250, height: 250 } },
+          async (decodedText: string) => {
+            if (processedRef.current) return;
+            processedRef.current = true;
+            await scanner.stop();
+            setScanning(false);
+            await submitAttendance(decodedText);
+          },
+          undefined
+        );
+      } catch (err) {
+        setScanning(false);
+        console.error(err);
+        toast.error('Camera not available. Use manual entry.');
+        setTab('manual');
+      }
+    };
+
+    startScanner();
+
+    return () => {
+      processedRef.current = false;
+      if (scanner) {
+        try { scanner.stop().catch(() => {}); } catch {}
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, result]);
+
+  const submitAttendance = async (token: string) => {
+    setSubmitting(true);
+    try {
+      const r = await fetch('/api/qr/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token, lat: location?.lat, lon: location?.lon }),
+      });
+      const data = await r.json();
+      if (r.ok) {
+        setResult({ success: true, message: data.message });
+        toast.success(data.message);
+      } else {
+        setResult({ success: false, message: data.error });
+        toast.error(data.error);
+      }
+    } catch {
+      toast.error('Network error. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const reset = () => {
+    setResult(null);
+    setManualToken('');
+    processedRef.current = false;
+  };
+
+  if (result) {
+    return (
+      <div className="p-6 lg:p-8 flex items-center justify-center min-h-[60vh]">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-8 max-w-sm w-full text-center">
+          {result.success ? (
+            <CheckCircle size={64} className="text-green-500 mx-auto mb-4" />
+          ) : (
+            <XCircle size={64} className="text-red-500 mx-auto mb-4" />
+          )}
+          <h2 className={`text-xl font-bold mb-2 ${result.success ? 'text-green-700' : 'text-red-700'}`}>
+            {result.success ? 'Attendance Marked!' : 'Failed'}
+          </h2>
+          <p className="text-gray-600 text-sm mb-6">{result.message}</p>
+          <button onClick={reset} className="px-6 py-3 bg-emerald-600 text-white rounded-lg font-medium hover:bg-emerald-700">
+            {result.success ? 'Done' : 'Try Again'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-6 lg:p-8">
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-800">Mark Attendance</h1>
+        <p className="text-gray-500 text-sm">Scan the QR code shown by your teacher</p>
+        {!location && <p className="text-xs text-orange-500 mt-1">⚠️ Location not available — attendance may be rejected by proximity check</p>}
+        {location && <p className="text-xs text-green-500 mt-1">✓ Location detected</p>}
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-6 bg-white rounded-xl border border-gray-100 p-1 w-fit shadow-sm">
+        <button onClick={() => setTab('camera')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'camera' ? 'bg-emerald-600 text-white shadow' : 'text-gray-600 hover:bg-gray-100'}`}>
+          <ScanLine size={16} /> Scan QR
+        </button>
+        <button onClick={() => setTab('manual')} className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${tab === 'manual' ? 'bg-emerald-600 text-white shadow' : 'text-gray-600 hover:bg-gray-100'}`}>
+          <Keyboard size={16} /> Enter Code
+        </button>
+      </div>
+
+      {tab === 'camera' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-md">
+          <div
+            id="qr-reader"
+            ref={scannerRef}
+            className="rounded-xl overflow-hidden mb-4"
+            style={{ minHeight: 280 }}
+          />
+          {scanning && (
+            <div className="flex items-center justify-center gap-2 text-sm text-emerald-600">
+              <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+              Camera active — point at QR code
+            </div>
+          )}
+          {submitting && <p className="text-center text-sm text-blue-600 mt-2">Verifying attendance…</p>}
+        </div>
+      )}
+
+      {tab === 'manual' && (
+        <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 max-w-md">
+          <h3 className="font-semibold text-gray-700 mb-4">Enter QR Code Manually</h3>
+          <p className="text-sm text-gray-500 mb-4">Ask your teacher for the QR code text (format: SQAS-…)</p>
+          <textarea
+            value={manualToken}
+            onChange={e => setManualToken(e.target.value.trim())}
+            placeholder="Paste the QR code here…"
+            rows={3}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-500 text-gray-800 resize-none"
+          />
+          <button
+            onClick={() => submitAttendance(manualToken)}
+            disabled={!manualToken || submitting}
+            className="mt-4 w-full bg-emerald-600 text-white py-3 rounded-lg font-medium hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {submitting ? 'Verifying…' : 'Submit Attendance'}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
